@@ -1,0 +1,1 @@
+{"class_size": 2, "embed_size": 2560, "pretrained_model": "/root/autodl-tmp/models/EleutherAI/pythia-2.8b", "class_vocab": {"non_toxic": 0, "toxic": 1}, "default_class": 0}
