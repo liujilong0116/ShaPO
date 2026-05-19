@@ -298,10 +298,6 @@ def get_pku_30k(split: str, silent: bool = False, cache_dir: str = None, label_t
     noise_list = idx_list[:k]
     data = defaultdict(lambda: defaultdict(list))
 
-
-    count = 0
-
-
     for index, row in tqdm.tqdm(enumerate(dataset), desc='Processing PKU_30K', disable=silent):
         prompt = f"\n\nHuman: {row['prompt']}\n\nAssistant:"
         if index not in noise_list:
@@ -320,9 +316,7 @@ def get_pku_30k(split: str, silent: bool = False, cache_dir: str = None, label_t
         data[prompt]['responses'].extend(responses)
         data[prompt]['label_type'].append(label_type)
         data[prompt]['sft_target'] = chosen
-        count += 1
-        if count > 2048:
-            break
+
     return data
 
 def get_pku_10k_mixed(split: str, silent: bool = False, cache_dir: str = None, harmless_rate=0.):

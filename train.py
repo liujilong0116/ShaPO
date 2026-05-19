@@ -98,7 +98,7 @@ def worker_main(rank: int, world_size: int, config: DictConfig):
 
     from safe_rlhf.models import AutoModelForScore
     if config.use_reward:
-        harmless_reward_model = transformers.AutoModelForSequenceClassification.from_pretrained(config.harmless_reward_model_path, torch_dtype=torch.bfloat16)
+        harmless_reward_model = AutoModelForScore.from_pretrained(config.harmless_reward_model_path, torch_dtype=torch.bfloat16)
     else:
         harmless_reward_model = None
 

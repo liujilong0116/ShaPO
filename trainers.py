@@ -46,10 +46,8 @@ import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
 import os
-import re
 
 from MemTracker import MemTracker
-import math
 
 
 @torch.no_grad()
@@ -429,7 +427,6 @@ class BasicTrainer(object):
 
             with torch.no_grad():
                 out = reward_model(**inputs)
-                print(out)
                 scores = out.end_scores.squeeze(-1)  # [batch]
             return scores.detach()
         
@@ -582,7 +579,7 @@ class BasicTrainer(object):
             if not os.path.exists(log_save_path):
                 os.makedirs(log_save_path)
             log_file_name = self.config.loss.name2
-            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}_{'same_steps' if self.config.same_steps else 'more_steps'}_top{self.config.probe_percentage}.log"
+            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}_top{self.config.probe_percentage}.log"
             mean_eval_metrics = {k: sum(v) / len(v) for k, v in all_eval_metrics.items()}
             if self.rank == 0:
                 with open(log_file_path, "a", encoding="utf-8") as f:  # "a" 表示追加写入
@@ -599,7 +596,7 @@ class BasicTrainer(object):
             if not os.path.exists(log_save_path):
                 os.makedirs(log_save_path)
             log_file_name = self.config.loss.name2
-            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}_{'same_steps' if self.config.same_steps else 'more_steps'}.log"
+            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}.log"
             if self.rank == 0:
                 with open(log_file_path, "a", encoding="utf-8") as f:  # "a" 表示追加写入
                     f.write(f'train after {self.example_counter}: {formatted_dict(metrics)}' + "\n")
@@ -621,8 +618,7 @@ class BasicTrainer(object):
 
             batch_collector.append({"prompt": batch["prompt"], "chosen": batch["chosen_response_only"], "rejected": batch["rejected_response_only"], "label_type": batch["label_type"]})
 
-            if ((self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo != 0) or (not self.config.same_steps) or (self.config.loss.name2 != "shapo")) and self.config.interval_for_shapo != 1:
-            # if False:
+            if ((self.batch_counter + 1) % interval_for_shapo != 0 or (self.config.loss.name2 != "shapo")) and self.config.interval_for_shapo != 1:
                 for microbatch_idx in range(self.config.gradient_accumulation_steps):
                     global_microbatch = slice_and_move_batch_for_device(batch, microbatch_idx, self.config.gradient_accumulation_steps, self.rank)
                     local_microbatch = slice_and_move_batch_for_device(global_microbatch, self.rank, self.world_size, self.rank)
@@ -630,12 +626,9 @@ class BasicTrainer(object):
                         loss, metrics = self.get_batch_metrics(local_microbatch, self.config.loss, train=True, use_reward=self.config.use_reward)
                     rank0_print(f"*** loss ***: {loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}")
                     
-                    if self.config.loss.name2 == "shapo" and not self.config.same_steps:
-                        with self.mem.region("loss backward"):
-                            (loss / self.config.gradient_accumulation_steps * interval_for_shapo / (interval_for_shapo + 1)).backward()
-                    else:
-                        with self.mem.region("loss backward"):
-                            (loss / self.config.gradient_accumulation_steps).backward()
+
+                    with self.mem.region("loss backward"):
+                        (loss / self.config.gradient_accumulation_steps).backward()
 
                     for k, v in metrics.items():
                         batch_metrics[k].extend(v)
@@ -669,40 +662,16 @@ class BasicTrainer(object):
                 has_dpo = True
             
             
-            if (self.config.loss.name2 == "shapo") and ((not self.config.same_steps and self.batch_counter % interval_for_shapo == 0) or (self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo == 0 and not has_dpo)) or self.config.interval_for_shapo == 1:
+            if (self.config.loss.name2 == "shapo") and (((self.batch_counter + 1) % interval_for_shapo == 0 and not has_dpo)) or self.config.interval_for_shapo == 1:
                 batch_metrics = defaultdict(list)
                 rank0_print(f"************* Use shapo every {interval_for_shapo} steps: {datetime.datetime.now()} *************")
-                # 步长不同，则代表是 x 次后额外执行一次 ShaPO，需要从 batch_collector 里采样一个 batch 出来
-                batch_for_shapo = None
-                if not self.config.same_steps:
-                    data_for_shapo = merge_and_sample(batch_collector, self.config.batch_size)
-                    batch_data = []
-                    truncation_mode = 'keep_end' if self.config.datasets == ["hh"] else 'keep_start'
-                    for index in range(self.config.batch_size):
-                        batch_element = tokenize_batch_element(
-                            data_for_shapo["prompt"][index], 
-                            data_for_shapo["chosen"][index],
-                            data_for_shapo["rejected"][index],
-                            truncation_mode, 
-                            self.tokenizer, 
-                            self.config.max_length, 
-                            self.config.max_prompt_length)
-                        batch_element["label_type"] = data_for_shapo["label_type"][index]
-                        batch_data.append(batch_element)
-                    batch_for_shapo = collate_fn(batch_data)
-
                 for microbatch_idx in range(self.config.gradient_accumulation_steps):
                     self.lora_grad_stash = stash_lora_grads(self.policy)
                     for p in self.policy.parameters():
                         p.requires_grad = True
-                    if batch_for_shapo:
-                        global_microbatch = slice_and_move_batch_for_device(
-                            batch_for_shapo, microbatch_idx, self.config.gradient_accumulation_steps, self.rank
-                        )
-                    else:
-                        global_microbatch = slice_and_move_batch_for_device(
-                            batch, microbatch_idx, self.config.gradient_accumulation_steps, self.rank
-                        )
+                    global_microbatch = slice_and_move_batch_for_device(
+                        batch, microbatch_idx, self.config.gradient_accumulation_steps, self.rank
+                    )
                     local_microbatch = slice_and_move_batch_for_device(
                         global_microbatch, self.rank, self.world_size, self.rank
                     )
@@ -726,7 +695,6 @@ class BasicTrainer(object):
                         layers = self.policy.model.layers
                     else:
                         raise RuntimeError(f"Unsupported model_type={self.policy.config.model_type}") 
-                    toxic_neurons_grads = []
 
                     gamma_max = 4e-6
                     gamma_min = 2e-6
@@ -759,15 +727,13 @@ class BasicTrainer(object):
 
                                 W_fullgrad = W.grad
                                 if W_fullgrad is None:
-                                    # 没有梯度就跳过这层
                                     continue
 
-                                # 保存整块梯度矩阵，后面用来撤销扰动
                                 g = W_fullgrad.detach().clone()
                                 mask_1d = self.layer_masks[layer_idx].to(W.device)
                                 mask_mat = mask_1d.view(1, -1).to(dtype=g.dtype)
                                 g_masked = g * mask_mat
-                                outer_grads.append((layer_idx, g.to("cpu")))
+                                outer_grads.append((layer_idx, g_masked.to("cpu")))
 
                                 # 对整块矩阵加扰动：W <- W + gamma * grad
                                 with torch.no_grad():
@@ -780,10 +746,7 @@ class BasicTrainer(object):
                     with self.mem.region("get loss"):
                         sam_loss, metrics = self.get_batch_metrics(local_microbatch, self.config.loss, train=True, use_reward=self.config.use_reward)
                     with self.mem.region("loss backward"):
-                        if not self.config.same_steps:
-                            (sam_loss / self.config.gradient_accumulation_steps * interval_for_shapo / (interval_for_shapo + 1)).backward()
-                        else:
-                            (sam_loss / self.config.gradient_accumulation_steps).backward()
+                        (sam_loss / self.config.gradient_accumulation_steps).backward()
                     rank0_print(f"*** loss ***: {sam_loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}    best_gamma: {self.best_gamma}")
                     # rank0_print(metrics)
                     for k, v in metrics.items():
@@ -791,7 +754,7 @@ class BasicTrainer(object):
                     # === 外层：撤销扰动使得训练更加连续  ===
                     #修改位置
                     with self.mem.region("sub gamma"):
-                        for layer_idx, g in outer_grads:
+                        for layer_idx, g_masked in outer_grads:
                             layer_module = layers[layer_idx]
                             with FSDP.summon_full_params(layer_module,
                                                         recurse=True,
@@ -816,8 +779,7 @@ class BasicTrainer(object):
 
                                 with torch.no_grad():
                                     # W <- W - gamma * grad
-                                    W.sub_(self.best_gamma * g.to(W.device))
-                                # print(f"撤销扰动，参数gamma是：{self.best_gamma}")
+                                    W.sub_(self.best_gamma * g_masked.to(W.device))
 
                 with self.mem.region("optim_step"):
                     grad_norm = self.clip_gradient()
@@ -830,11 +792,8 @@ class BasicTrainer(object):
                 batch_metrics['examples_per_second'].append(examples_per_second)
                 batch_metrics['grad_norm'].append(grad_norm)
 
-                # 如果是每 x 次的最后一次为 ShaPO，则在此计数，此时步长不同
-                # 如果是每 x 次后额外加一次 ShaPO，则在上面计数
-                if self.config.same_steps:
-                    self.batch_counter += 1
-                    self.example_counter += self.config.batch_size
+                self.batch_counter += 1
+                self.example_counter += self.config.batch_size
                 rank0_print("self.batch_counter ShaPO", self.batch_counter)
                 if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
                     mean_train_metrics = {k: sum(v) / len(v) for k, v in batch_metrics.items()}
@@ -882,7 +841,7 @@ class BasicTrainer(object):
                     log_save_path = f"/home/y/yangyh/ljl/ShaPO/{model_name}TrainAfterInferenceOutputs"
                     if not os.path.exists(log_save_path):
                         os.makedirs(log_save_path)
-                    file_path = f"{log_save_path}/reward_{self.config.loss.name2}_{self.config.reward_beta}_{self.config.harmless_rate}_{'same_steps' if self.config.same_steps else 'more_steps'}.jsonl"  
+                    file_path = f"{log_save_path}/reward_{self.config.loss.name2}_{self.config.reward_beta}_{self.config.harmless_rate}.jsonl"  
                     # 以追加模式循环写入
                     with open(file_path, 'a', encoding='utf-8') as f:
                         for item in eval_batch_output:
@@ -1020,14 +979,13 @@ class FSDPTrainer(BasicTrainer):
         #     scheduler_state_dict = self.scheduler.state_dict()
         #     self.write_state_dict(self.example_counter, scheduler_state_dict, metrics, 'scheduler.pt', output_dir)
         # dist.barrier()
-        
 
 class TensorParallelTrainer(BasicTrainer):
     def __init__(self, policy, config, seed, run_dir, reference_model=None, rank=0, world_size=1, harmless_reward_model= None):
         """A trainer subclass that uses TensorParallel to shard the model across multiple GPUs.
 
            Based on https://github.com/BlackSamorez/tensor_parallel. Note sampling is extremely slow,
-              see https://github.com/BlackSamorez/tensor_parallel/issues/66.
+           see https://github.com/BlackSamorez/tensor_parallel/issues/66.
         """
         super().__init__(policy, config, seed, run_dir, reference_model, rank, world_size, harmless_reward_model)
         

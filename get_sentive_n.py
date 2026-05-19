@@ -160,7 +160,10 @@ def get_setiv_vec_by_percentage(path=None, percentage=1):
     print(f"🔄 读取毒性向量：{probe_path}")
     
     toxic_vector = torch.load(probe_path, map_location="cpu")
-    total_neurons = 327680
+    model_config = model.config
+    num_layers = getattr(model_config, "num_hidden_layers", None)
+    neurons_per_layer = getattr(model_config, "intermediate_size", None)
+    total_neurons = num_layers * neurons_per_layer
     top_k = int(total_neurons * percentage / 100)
     top_k = max(1, min(top_k, total_neurons))
 
