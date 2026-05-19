@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import transformers
 from omegaconf import DictConfig
-from get_sentive_n import get_setiv_vec_by_percentage, build_layer_masks_from_top_vecs
+from get_sentive_n import get_setiv_vec_by_percentage
 import torch.distributed as dist
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
@@ -50,7 +50,6 @@ import re
 
 from MemTracker import MemTracker
 import math
-from get_reward_score import text_to_key, get_reward_score_dict
 
 
 @torch.no_grad()
@@ -267,7 +266,7 @@ def concatenated_inputs(batch: Dict[str, Union[List, torch.LongTensor]]) -> Dict
 
 
 class BasicTrainer(object):
-    def __init__(self, policy: nn.Module, config: DictConfig, seed: int, run_dir: str, reference_model: Optional[nn.Module] = None, rank: int = 0, world_size: int = 1, helpful_reward_model=None, harmless_reward_model=None):
+    def __init__(self, policy: nn.Module, config: DictConfig, seed: int, run_dir: str, reference_model: Optional[nn.Module] = None, rank: int = 0, world_size: int = 1, harmless_reward_model=None):
         """A trainer for a language model, supporting either SFT or DPO training.
            
            If multiple GPUs are present, naively splits the model across them, effectively
@@ -281,10 +280,7 @@ class BasicTrainer(object):
         #新增
         self.best_gamma = 0.0
 
-        self.sharpo_radius = config.sharpo_radius
-        self.selected_neurons = get_setiv_vec_by_percentage(path=None, percentage=self.config.probe_percentage)
-        self.layer_masks = build_layer_masks_from_top_vecs(self.selected_neurons)
-        self.sharpo_trials = config.sharpo_trials
+        
 
         self.mem = MemTracker(enable=True, rank=self.rank)
         
@@ -311,6 +307,12 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.reference_model = reference_model
+
+        self.num_layers = getattr(self.policy.config, "num_hidden_layers", None)
+        self.neurons_per_layer = getattr(self.policy.config, "intermediate_size", None)
+
+        self.selected_neurons = get_setiv_vec_by_percentage(path=None, percentage=self.config.probe_percentage)
+        self.layer_masks = build_layer_masks_from_top_vecs(self.selected_neurons, num_layers=self.num_layers, neurons_per_layer=self.neurons_per_layer)
         
         if harmless_reward_model:
             self.harmless_reward_model = harmless_reward_model
@@ -318,11 +320,7 @@ class BasicTrainer(object):
             if self.harmless_reward_tokenizer.pad_token is None:
                 self.harmless_reward_tokenizer.pad_token = self.harmless_reward_tokenizer.eos_token
                 self.harmless_reward_model.config.pad_token_id = self.harmless_reward_tokenizer.pad_token_id
-        # self.helpful_reward_model = helpful_reward_model
-        # self.helpful_reward_tokenizer = transformers.AutoTokenizer.from_pretrained(self.config.pku_helpful_reward_model_path)
-        # if self.helpful_reward_tokenizer.pad_token is None:
-        #     self.helpful_reward_tokenizer.pad_token = self.helpful_reward_tokenizer.eos_token
-        #     self.helpful_reward_model.config.pad_token_id = self.helpful_reward_tokenizer.pad_token_id
+
         
         self.train_iterator = get_batch_iterator(**data_iterator_kwargs, split='train', n_epochs=config.n_epochs, n_examples=config.n_examples, batch_size=config.batch_size, silent=rank != 0, cache_dir=get_local_dir(config.local_dirs), noise_rate=config.noise_rate, harmless_rate=config.harmless_rate)
         rank0_print(f'Loaded train data iterator')
@@ -335,12 +333,6 @@ class BasicTrainer(object):
             cache_dir=get_local_dir(config.local_dirs), 
             harmless_rate=config.harmless_rate)
         self.eval_batches = list(self.eval_iterator)
-
-        self.reward_score_dict = get_reward_score_dict()
-        rank0_print(f'Loaded test data iterator')
-        # self.test_iterator = get_batch_iterator(**data_iterator_kwargs, split='test', n_examples=config.n_eval_examples, batch_size=config.eval_batch_size, silent=rank != 0, cache_dir=get_local_dir(config.local_dirs), harmless_rate=config.harmless_rate)
-        # self.test_batches = list(self.test_iterator)
-        rank0_print(f'Loaded test data iterator')
         rank0_print(f'Loaded {len(self.eval_batches)} eval batches of size {config.eval_batch_size}')
 
 
@@ -437,6 +429,7 @@ class BasicTrainer(object):
 
             with torch.no_grad():
                 out = reward_model(**inputs)
+                print(out)
                 scores = out.end_scores.squeeze(-1)  # [batch]
             return scores.detach()
         
@@ -458,7 +451,7 @@ class BasicTrainer(object):
         metrics = {}
         train_test = 'train' if train else 'eval'
 
-        if loss_config.name in {'dpo', 'ipo','sharpo'}:
+        if loss_config.name in {'dpo', 'ipo','shapo'}:
             policy_chosen_logps, policy_rejected_logps = self.concatenated_forward(self.policy, batch)
             with torch.no_grad():
                 reference_chosen_logps, reference_rejected_logps = self.concatenated_forward(self.reference_model, batch)
@@ -474,7 +467,7 @@ class BasicTrainer(object):
             else:
                 reward_preference_probability = None
 
-            if loss_config.name == 'dpo' or loss_config.name=='sharpo':
+            if loss_config.name == 'dpo' or loss_config.name=='shapo':
                 loss_kwargs = {'beta': loss_config.beta, 'reference_free': loss_config.reference_free, 'label_smoothing': loss_config.label_smoothing, 'ipo': False, 'use_reward': use_reward, 'reward_preference_probability': reward_preference_probability, "loss_name2": loss_config.name2, "rdpo_epsilon": self.config.loss.rdpo_epsilon, "simpo_gamma_beta_ratio": self.config.loss.simpo_gamma_beta_ratio, "mode_loss": loss_config.mode_loss, "mode_weight": loss_config.mode_weight}
             elif loss_config.name == 'ipo':
                 loss_kwargs = {'beta': loss_config.beta, 'ipo': True, "loss_name2": loss_config.name2}
@@ -558,7 +551,7 @@ class BasicTrainer(object):
         np.random.seed(self.seed)
         random.seed(self.seed)
 
-        if self.config.loss.name in {'dpo', 'ipo','sharpo'}:
+        if self.config.loss.name in {'dpo', 'ipo','shapo'}:
             self.reference_model.eval()
 
         self.example_counter = 0
@@ -589,7 +582,7 @@ class BasicTrainer(object):
             if not os.path.exists(log_save_path):
                 os.makedirs(log_save_path)
             log_file_name = self.config.loss.name2
-            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}_{'same_steps' if self.config.same_steps else 'more_steps'}_{self.config.probe_top_k}.log"
+            log_file_path = f"{log_save_path}/reward_{log_file_name}_{self.config.reward_beta}_{self.config.harmless_rate}_{'same_steps' if self.config.same_steps else 'more_steps'}_top{self.config.probe_percentage}.log"
             mean_eval_metrics = {k: sum(v) / len(v) for k, v in all_eval_metrics.items()}
             if self.rank == 0:
                 with open(log_file_path, "a", encoding="utf-8") as f:  # "a" 表示追加写入
@@ -628,16 +621,16 @@ class BasicTrainer(object):
 
             batch_collector.append({"prompt": batch["prompt"], "chosen": batch["chosen_response_only"], "rejected": batch["rejected_response_only"], "label_type": batch["label_type"]})
 
-            if ((self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo != 0) or (not self.config.same_steps) or (self.config.loss.name2 != "sharpo")) and self.config.interval_for_shapo != 1:
+            if ((self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo != 0) or (not self.config.same_steps) or (self.config.loss.name2 != "shapo")) and self.config.interval_for_shapo != 1:
             # if False:
                 for microbatch_idx in range(self.config.gradient_accumulation_steps):
                     global_microbatch = slice_and_move_batch_for_device(batch, microbatch_idx, self.config.gradient_accumulation_steps, self.rank)
                     local_microbatch = slice_and_move_batch_for_device(global_microbatch, self.rank, self.world_size, self.rank)
                     with self.mem.region("get loss"):
                         loss, metrics = self.get_batch_metrics(local_microbatch, self.config.loss, train=True, use_reward=self.config.use_reward)
-                    rank0_print(f"*** fucking loss ***: {loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}")
+                    rank0_print(f"*** loss ***: {loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}")
                     
-                    if self.config.loss.name2 == "sharpo" and not self.config.same_steps:
+                    if self.config.loss.name2 == "shapo" and not self.config.same_steps:
                         with self.mem.region("loss backward"):
                             (loss / self.config.gradient_accumulation_steps * interval_for_shapo / (interval_for_shapo + 1)).backward()
                     else:
@@ -676,8 +669,7 @@ class BasicTrainer(object):
                 has_dpo = True
             
             
-            if (self.config.loss.name2 == "sharpo") and ((not self.config.same_steps and self.batch_counter % interval_for_shapo == 0) or (self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo == 0 and not has_dpo)) or self.config.interval_for_shapo == 1:
-            # if (self.config.loss.name2 == "sharpo"):
+            if (self.config.loss.name2 == "shapo") and ((not self.config.same_steps and self.batch_counter % interval_for_shapo == 0) or (self.config.same_steps and (self.batch_counter + 1) % interval_for_shapo == 0 and not has_dpo)) or self.config.interval_for_shapo == 1:
                 batch_metrics = defaultdict(list)
                 rank0_print(f"************* Use shapo every {interval_for_shapo} steps: {datetime.datetime.now()} *************")
                 # 步长不同，则代表是 x 次后额外执行一次 ShaPO，需要从 batch_collector 里采样一个 batch 出来
@@ -792,7 +784,7 @@ class BasicTrainer(object):
                             (sam_loss / self.config.gradient_accumulation_steps * interval_for_shapo / (interval_for_shapo + 1)).backward()
                         else:
                             (sam_loss / self.config.gradient_accumulation_steps).backward()
-                    rank0_print(f"*** fucking loss ***: {sam_loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}    best_gamma: {self.best_gamma}")
+                    rank0_print(f"*** loss ***: {sam_loss}    microbatch_idx: {microbatch_idx}   rank:{self.rank}    best_gamma: {self.best_gamma}")
                     # rank0_print(metrics)
                     for k, v in metrics.items():
                         batch_metrics[k].extend(v)
@@ -933,14 +925,14 @@ class BasicTrainer(object):
 
 
 class FSDPTrainer(BasicTrainer):
-    def __init__(self, policy: nn.Module, config: DictConfig, seed: int, run_dir: str, reference_model: Optional[nn.Module] = None, rank: int = 0, world_size: int = 1, helpful_reward_model=None, harmless_reward_model= None):
+    def __init__(self, policy: nn.Module, config: DictConfig, seed: int, run_dir: str, reference_model: Optional[nn.Module] = None, rank: int = 0, world_size: int = 1, harmless_reward_model= None):
         """A trainer subclass that uses PyTorch FSDP to shard the model across multiple GPUs.
         
            This trainer will shard both the policy and reference model across all available GPUs.
            Models are sharded at the block level, where the block class name is provided in the config.
         """
 
-        super().__init__(policy, config, seed, run_dir, reference_model, rank, world_size, helpful_reward_model, harmless_reward_model)
+        super().__init__(policy, config, seed, run_dir, reference_model, rank, world_size, harmless_reward_model)
         assert config.model.block_name is not None, 'must specify model.block_name (e.g., GPT2Block or GPTNeoXLayer) for FSDP'
 
         wrap_class = get_block_class_from_model(policy, config.model.block_name)
@@ -993,8 +985,6 @@ class FSDPTrainer(BasicTrainer):
         if config.loss.name in {'dpo', 'ipo'}:
             print(f'Rank {self.rank} Sharding reference / rewards model...')
             self.reference_model = FSDP(reference_model, **shared_fsdp_kwargs)
-            if helpful_reward_model:
-                self.helpful_reward_model = FSDP(helpful_reward_model, **shared_fsdp_kwargs)
             if harmless_reward_model:
                 self.harmless_reward_model = FSDP(harmless_reward_model, **shared_fsdp_kwargs)
         
@@ -1033,13 +1023,13 @@ class FSDPTrainer(BasicTrainer):
         
 
 class TensorParallelTrainer(BasicTrainer):
-    def __init__(self, policy, config, seed, run_dir, reference_model=None, rank=0, world_size=1, helpful_reward_model=None, harmless_reward_model= None):
+    def __init__(self, policy, config, seed, run_dir, reference_model=None, rank=0, world_size=1, harmless_reward_model= None):
         """A trainer subclass that uses TensorParallel to shard the model across multiple GPUs.
 
            Based on https://github.com/BlackSamorez/tensor_parallel. Note sampling is extremely slow,
               see https://github.com/BlackSamorez/tensor_parallel/issues/66.
         """
-        super().__init__(policy, config, seed, run_dir, reference_model, rank, world_size, helpful_reward_model, harmless_reward_model)
+        super().__init__(policy, config, seed, run_dir, reference_model, rank, world_size, harmless_reward_model)
         
         rank0_print('Sharding policy...')
         self.policy = tp.tensor_parallel(policy, sharded=True)
@@ -1047,7 +1037,6 @@ class TensorParallelTrainer(BasicTrainer):
             rank0_print('Sharding reference model...')
             self.reference_model = tp.tensor_parallel(reference_model, sharded=False)
             rank0_print('Sharding reward model...')
-            self.helpful_reward_model = tp.tensor_parallel(helpful_reward_model, sharded=False)
             self.harmless_reward_model = tp.tensor_parallel(harmless_reward_model, sharded=False)
 
     def save(self, output_dir=None, metrics=None):

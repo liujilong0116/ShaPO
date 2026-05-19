@@ -26,7 +26,7 @@ cross_eval_datasets:
 wandb:
   enabled: false
   entity: null
-  project: "SharPO"
+  project: "ShaPO"
 
 # to create the local run directory and cache models/datasets,
 #   we will try each of these directories in order; if none exist,
@@ -97,9 +97,6 @@ minimum_log_interval_secs: 1.0
 # pairwise_noise_ratio
 noise_rate: 0.0
 
-sharpo_radius: 0.5
-sharpo_trials: 10
-
 defaults:
   - _self_
   - model: blank_model_fp32 # basic model configuration
@@ -107,10 +104,10 @@ defaults:
 
 use_reward: false
 reward_beta: 0.5
-harmless_rate: 0.
+harmless_rate: 0. # Only for pku_mixed
 interval_for_shapo: 5
-same_steps: false # 用于控制 SharPO 使用什么样的步长
+same_steps: false # 用于控制 ShaPO 使用什么样的步长
 if_output: true # 控制最后是否直接输出结果
 if_save: false # 控制最后是否保存模型
 probe_percentage: 1
-pku_helpful_reward_model_path: /mnt/scratch/y/yangyh/models/PKU-Alignment/beaver-7b-v1.0-cost
+harmless_reward_model_path: /mnt/scratch/y/yangyh/models/PKU-Alignment/beaver-7b-v1.0-cost

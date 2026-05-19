@@ -139,10 +139,8 @@ def get_setiv_vec(path=None, top_k=128):
     return top_vecs
 
 def get_setiv_vec_by_percentage(path=None, percentage=1):
-
-    
-    model_id = "/mnt/scratch/y/yangyh/models/EleutherAI/pythia-2.8b"
-    probe_path = "/home/y/yangyh/ljl/ShaPO/classifier_output/pythia_layer_-1_pku_30k_safety/toxic_pythia_pku_harmless.pt"
+    model_id = "/mnt/scratch/y/yangyh/models/meta-llama/Llama-3.2-3B"
+    probe_path = "/home/y/yangyh/ljl/SharPO/classifier_output/llama323_layer_-1_pku_30k_safety/toxic_llama323_pku_harmless.pt"
 
 
     print(f"🔄 正在加载模型{model_id}")
@@ -161,28 +159,10 @@ def get_setiv_vec_by_percentage(path=None, percentage=1):
     print("🛠️ 已禁用 Dropout")
     print(f"🔄 读取毒性向量：{probe_path}")
     
-    import random
     toxic_vector = torch.load(probe_path, map_location="cpu")
-    neurons_per_layer = 10240
     total_neurons = 327680
-    seed = 42
     top_k = int(total_neurons * percentage / 100)
     top_k = max(1, min(top_k, total_neurons))
-
-
-    # print(f"🎲 随机选择神经元: top_k={top_k}, seed={seed}")
-    # rnd = random.Random(seed)
-
-    # # 在 [0, total_neurons) 上无放回采样
-    # picked = rnd.sample(range(total_neurons), top_k)
-
-    # # 映射回 (layer_idx, neuron_idx)
-    # top_vecs = []
-    # for gid in picked:
-    #     layer_idx = gid // neurons_per_layer
-    #     neuron_idx = gid % neurons_per_layer
-    #     top_vecs.append((0.0, layer_idx, neuron_idx))  # sim用0占位
-    # return top_vecs
 
     top_vecs = rank_value_vecs(model, toxic_vector, top_k=top_k)
     return top_vecs
