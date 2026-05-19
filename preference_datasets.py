@@ -663,7 +663,7 @@ def get_batch_iterator(names: List[str],
         cache_dir: Directory to cache the datasets in.
     """
     assert n_epochs is not None or n_examples is not None, "Must specify either n_epochs or n_examples"
-    print(f"fucking {split} {n_epochs} {n_examples}")
+    print(f"{split} {n_epochs} {n_examples}")
     if silent:
         datasets.logging.disable_progress_bar()
         datasets.logging.set_verbosity_error()
