@@ -90,7 +90,7 @@ python train.py   model=llama323b   datasets=[pku_30k_harmless]   loss=sft   exp
 Token-level ShaPO combines DPO with SAM-style perturbations on the identified subspace.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 python -u train.py model=llama323b datasets=[pku_30k_harmless] loss=dpo loss.beta=0.1 exp_name=llama323_DrShaPO_pku_30k_harmless gradient_accumulation_steps=2 batch_size=32 eval_batch_size=32 trainer=FSDPTrainer sample_during_eval=false model.fsdp_policy_mp=bfloat16 model.archive=/home/y/yangyh/ljl/ShaPO/.cache/yangyh/llama38_pku_30k_harmless_sft_2026-01-01_23-20-03_192292/LATEST/policy.pt loss.name2=shapo warmup_steps=10 max_grad_norm=10 n_eval_examples=256 eval_every=2048 reward_beta=10 harmless_rate=0.2 interval_for_shapo=5 same_steps=true if_output=false if_save=true probe_percentage=1 loss.mode_loss=DrDPO
+CUDA_VISIBLE_DEVICES=0,1 python -u train.py model=llama323b datasets=[pku_30k_harmless] loss=dpo loss.beta=0.1 exp_name=llama323_DrShaPO_pku_30k_harmless gradient_accumulation_steps=2 batch_size=32 eval_batch_size=32 trainer=FSDPTrainer sample_during_eval=false model.fsdp_policy_mp=bfloat16 model.archive=/home/y/yangyh/ljl/ShaPO/.cache/yangyh/llama38_pku_30k_harmless_sft_2026-01-01_23-20-03_192292/LATEST/policy.pt loss.name2=shapo warmup_steps=10 max_grad_norm=10 n_eval_examples=256 eval_every=2048 reward_beta=10 interval_for_shapo=5 if_output=false if_save=true probe_percentage=1 loss.mode_loss=DrDPO
 ```
 
 ### 5) LLaMA3.2-8B **ShaPO (Reward-level)**
@@ -98,7 +98,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -u train.py model=llama323b datasets=[pku_30k_ha
 Reward-level ShaPO anchors robustness to a reward model signal while staying RL-free.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 python -u train.py model=llama323b datasets=[pku_30k_harmless] loss=dpo loss.beta=0.1 exp_name=llama38_DrShaPO_pku_30k_harmless gradient_accumulation_steps=2 batch_size=32 eval_batch_size=32 trainer=FSDPTrainer sample_during_eval=false model.fsdp_policy_mp=bfloat16 model.archive=/home/y/yangyh/ljl/ShaPO/.cache/yangyh/llama38_pku_30k_harmless_sft_2026-01-01_23-20-03_192292/LATEST/policy.pt loss.name2=shapo warmup_steps=10 max_grad_norm=10 n_eval_examples=256 eval_every=2048 reward_beta=10 harmless_rate=0.2 interval_for_shapo=5 same_steps=true if_output=false if_save=true probe_percentage=1 loss.mode_loss=DrDPO use_reward=true
+CUDA_VISIBLE_DEVICES=0,1 python -u train.py model=llama323b datasets=[pku_30k_harmless] loss=dpo loss.beta=0.1 exp_name=llama38_DrShaPO_pku_30k_harmless gradient_accumulation_steps=2 batch_size=32 eval_batch_size=32 trainer=FSDPTrainer sample_during_eval=false model.fsdp_policy_mp=bfloat16 model.archive=/home/y/yangyh/ljl/ShaPO/.cache/yangyh/llama38_pku_30k_harmless_sft_2026-01-01_23-20-03_192292/LATEST/policy.pt loss.name2=shapo warmup_steps=10 max_grad_norm=10 n_eval_examples=256 eval_every=2048 reward_beta=10 interval_for_shapo=5 if_output=false if_save=true probe_percentage=1 loss.mode_loss=DrDPO use_reward=true
 ```
 
 > **Note:** For single-GPU training, set `gradient_accumulation_steps=1`.
